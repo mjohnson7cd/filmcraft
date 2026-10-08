@@ -168,16 +168,24 @@ fn main() -> eframe::Result {
             // Settings ▸ Audio Hardware is applied on the first frame (`apply_prefs`).
             app.audio = Some(Box::new(audio::CpalOut::new()));
             app.hooks.pick_files = Some(Box::new(|exts: &[&str]| {
-                rfd::FileDialog::new().add_filter("Media", exts).pick_files().unwrap_or_default().into_iter().map(|p| p.to_string_lossy().to_string()).collect()
+                let all_exts: Vec<String> = exts.iter().flat_map(|e| vec![e.to_string(), e.to_uppercase()]).collect();
+                let refs: Vec<&str> = all_exts.iter().map(|s| s.as_str()).collect();
+                rfd::FileDialog::new().add_filter("Media", &refs).pick_files().unwrap_or_default().into_iter().map(|p| p.to_string_lossy().to_string()).collect()
             }));
             // Link Media ▸ Locate…, Attach Proxies, Reconnect Full Resolution: one path, not imported.
             app.hooks.pick_file_for_relink =
-                Some(Box::new(|exts: &[&str], _hint| rfd::FileDialog::new().add_filter("Media", exts).pick_file().map(|p| p.to_string_lossy().to_string())));
+                Some(Box::new(|exts: &[&str], _hint| {
+                let all_exts: Vec<String> = exts.iter().flat_map(|e| vec![e.to_string(), e.to_uppercase()]).collect();
+                let refs: Vec<&str> = all_exts.iter().map(|s| s.as_str()).collect();
+                rfd::FileDialog::new().add_filter("Media", &refs).pick_file().map(|p| p.to_string_lossy().to_string())
+            }));
             app.hooks.pick_save = Some(Box::new(|name: &str| {
                 rfd::FileDialog::new().add_filter("FilmCraft Project", &["fcproj"]).set_file_name(name).save_file().map(|p| p.to_string_lossy().to_string())
             }));
             app.hooks.pick_save_as = Some(Box::new(|filter: &str, exts: &[&str], name: &str| {
-                rfd::FileDialog::new().add_filter(filter, exts).set_file_name(name).save_file().map(|p| p.to_string_lossy().to_string())
+                let all_exts: Vec<String> = exts.iter().flat_map(|e| vec![e.to_string(), e.to_uppercase()]).collect();
+                let refs: Vec<&str> = all_exts.iter().map(|s| s.as_str()).collect();
+                rfd::FileDialog::new().add_filter(filter, &refs).set_file_name(name).save_file().map(|p| p.to_string_lossy().to_string())
             }));
             app.hooks.pick_folder = Some(Box::new(|| rfd::FileDialog::new().pick_folder().map(|p| p.to_string_lossy().to_string())));
             app.hooks.open_path = Some(Box::new(open_path));
@@ -185,7 +193,9 @@ fn main() -> eframe::Result {
                 window_raise::raise_without_focus();
             }));
             app.hooks.pick_open_file = Some(Box::new(|filter: &str, exts: &[&str]| {
-                rfd::FileDialog::new().add_filter(filter, exts).pick_file().map(|p| p.to_string_lossy().to_string())
+                let all_exts: Vec<String> = exts.iter().flat_map(|e| vec![e.to_string(), e.to_uppercase()]).collect();
+                let refs: Vec<&str> = all_exts.iter().map(|s| s.as_str()).collect();
+                rfd::FileDialog::new().add_filter(filter, &refs).pick_file().map(|p| p.to_string_lossy().to_string())
             }));
             app.hooks.pick_open_project =
                 Some(Box::new(|| rfd::FileDialog::new().add_filter("FilmCraft Project", &["fcproj"]).pick_file().map(|p| p.to_string_lossy().to_string())));
