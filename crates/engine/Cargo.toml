@@ -44,3 +44,6 @@ web-time = "1"
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png"] }
+
+[target."cfg(any(unix, windows))".dependencies]
+file-id = "0.2.3"

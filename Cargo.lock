@@ -1664,6 +1664,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "file-id"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1fc6a637b6dc58414714eddd9170ff187ecb0933d4c7024d1abbd23a3cc26e9"
+dependencies = [
+ "windows-sys 0.60.2",
+]
+
+[[package]]
 name = "filmcraft"
 version = "0.4.0"
 dependencies = [
@@ -1855,6 +1864,7 @@ dependencies = [
 name = "filmcraft-engine"
 version = "0.4.0"
 dependencies = [
+ "file-id",
  "filmcraft-audio-dsp",
  "filmcraft-captions",
  "filmcraft-codecs",

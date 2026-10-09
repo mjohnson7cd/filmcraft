@@ -360,6 +360,42 @@ destination?, preset?}` (Project Settings ▸ Ingest) acts on every `file.import
 
 `file.import` reports this under `ingest`.
 
+### Importing a file twice
+
+`file.import {paths, bin?, imageSequence?}` does not add a file the project already has (#356). Its
+result always carries three lists:
+
+| Field | |
+|---|---|
+| `items` | ids of the items this import added |
+| `duplicates` | one `{path, item, moved}` per path whose file was already in the project: the path as given, the id of the existing item, and whether that item was moved (below). Nothing is added, ingested or transcribed for these, and there is no undo step unless an item moved |
+| `errors` | one `"path: reason"` per path that failed. A duplicate is never listed here |
+
+The command fails only when every path failed; a duplicate counts as a result. The UI shows
+"Already in the project: …" as a toast.
+
+- **The same file** is the same file on disk, not the same text: a symlink, a hard link, `..`, a
+  symlinked folder and (on case-insensitive volumes) another letter case all lead to the item that
+  is already there. The host answers this with the **file identity** (`Services::file_identity`,
+  `FileIdentity`): device + inode on Unix, volume serial number + file index on Windows (the
+  128-bit id on ReFS), with the size, so that a network or FUSE filesystem with non-unique indexes
+  cannot merge two different files. A host without file identities (the web) compares the paths as
+  written. This is not the media identity that relinking checks (`MediaClip::identity`, size +
+  fingerprint, [above](#media-offline-relinking-proxies-ingest)): a file identity is never saved in the
+  project, and a copy of a file has the same media identity but is another file.
+- **`bin`.** A duplicate asked into a bin it is not in is moved there (`moved: true`, undoable):
+  the file ends up where the import asked for it, once. Without `bin` the item stays in its bin.
+- **Image sequences.** A sequence is its first frame *in its folder, under its name*. The same
+  still as a single file is a different item, and so is a sequence starting at a later frame. A
+  hard link to the first frame in another folder, or under another name, starts a different
+  sequence (the frames beside it are others), though as single stills the two links are one file.
+- **Not duplicates:** an item made offline on purpose (importing brings the file in again), a file
+  whose size has changed since it was imported, and, with ingest set to copy, the original of a
+  file the project holds as its ingested copy.
+
+Only project files whose size at import equals the size of an incoming file are looked up on disk,
+once per command, so importing into a large project does not `stat` every item.
+
 ## Project Manager
 
 `file.projectManager` (File ▸ Project Manager…) makes a self-contained copy of a project:

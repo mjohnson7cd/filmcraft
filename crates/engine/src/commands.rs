@@ -400,6 +400,89 @@ fn detect_image_sequence(s: &Session, path: &str) -> bool {
     filmcraft_media::sequence::Numbered::parse(path).is_some() && crate::media_pool::image_sequence_frames(path, &*s.services).is_ok_and(|f| f.len() > 1)
 }
 
+/// A file as `file.import` tells files apart (#356): its file identity ([`crate::FileIdentity`]:
+/// a symlink, a hard link, `..` or another letter case lead to the same file), else the path as
+/// written (the host has no file identities: the web). Never the media identity
+/// ([`filmcraft_project::MediaIdentity`]), which a copy of the file shares.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum FileKey {
+    Identity(crate::FileIdentity),
+    Path(String),
+}
+
+impl FileKey {
+    fn of(services: &dyn crate::Services, path: &str) -> FileKey {
+        services.file_identity(path).map_or_else(|| FileKey::Path(path.to_string()), FileKey::Identity)
+    }
+}
+
+/// What one path of `file.import` adds to the project: importing the same key again would add a
+/// second copy of an item the project already has.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum ImportKey {
+    File(FileKey),
+    /// An image sequence is the frames beside its first frame, so it is that frame *in its
+    /// directory, under its name*: a hard link to the frame in another directory, or under another
+    /// name, starts a different sequence, and the same still imported as a single file is a
+    /// different item again. (`name` is lower case: one file name written in two letter cases.)
+    Sequence {
+        dir: FileKey,
+        first: FileKey,
+        name: String,
+    },
+}
+
+impl ImportKey {
+    /// The key of `path` (as the image sequence starting there, or as a single file) and the size
+    /// of the file. `None`: there is no such file or sequence; importing it says why.
+    fn of(services: &dyn crate::Services, path: &str, sequence: bool) -> Option<(ImportKey, u64)> {
+        let first = FileKey::of(services, path);
+        let size = match &first {
+            FileKey::Identity(id) => id.size,
+            FileKey::Path(_) => services.file_size(path).ok()?,
+        };
+        if !sequence {
+            return Some((ImportKey::File(first), size));
+        }
+        let n = filmcraft_media::sequence::Numbered::parse(path)?;
+        let dir = match n.dir.trim_end_matches(['/', '\\']) {
+            "" if n.dir.is_empty() => ".",
+            "" => n.dir.as_str(),
+            d => d,
+        };
+        Some((ImportKey::Sequence { dir: FileKey::of(services, dir), first, name: n.file_name(n.number).to_lowercase() }, size))
+    }
+}
+
+/// The online media files of the project by [`ImportKey`], built once per `file.import`. Only
+/// items whose size at import (the saved media identity, [`filmcraft_project::MediaIdentity`]) is
+/// one of `sizes` (the sizes of the files being imported) are asked for their file identity on
+/// disk: a large project costs a few `stat`s, not one per item. The media identity only narrows
+/// the search; the [`FileKey`] decides. A file whose size has changed since it was imported is therefore new media.
+/// Of several items of one file (projects from before #356) the oldest is the one reported.
+fn imported_files(s: &Session, sizes: &std::collections::HashSet<u64>) -> std::collections::HashMap<ImportKey, ItemId> {
+    let mut out = std::collections::HashMap::new();
+    for it in s.project.items.values() {
+        let Some(m) = it.as_media() else { continue };
+        let MediaRef::File { path } = &m.media else { continue };
+        // an item made offline on purpose is not the file: importing brings the file in again
+        if m.offline || m.identity.is_some_and(|i| !sizes.contains(&i.size)) {
+            continue;
+        }
+        if let Some((key, _)) = ImportKey::of(&*s.services, path, m.info.kind == filmcraft_media::MediaKind::ImageSequence) {
+            out.entry(key).or_insert(it.id);
+        }
+    }
+    out
+}
+
+/// The item a `file.import` result is about: the first it added, else the first it found already
+/// in the project (`duplicates`).
+pub(crate) fn imported_item(r: &Value) -> Option<ItemId> {
+    let first = |k: &str| r.get(k).and_then(Value::as_array).and_then(|a| a.first());
+    first("items").and_then(Value::as_u64).or_else(|| first("duplicates").and_then(|d| d.get("item")).and_then(Value::as_u64)).map(ItemId)
+}
+
 fn import_source(
     s: &mut Session,
     path: &str,
@@ -804,6 +887,13 @@ fn build() -> Vec<CommandSpec> {
                 Ok(json!({"items": ids.iter().map(|i| i.0).collect::<Vec<_>>()}))
             }
         ),
+        // Result: `items` (the ids added), `errors` (one `path: reason` per path that failed; the
+        // command itself fails only when nothing else came of it) and `duplicates`: one
+        // `{path, item, moved}` per path whose file the project already has, with the existing
+        // item. Nothing is added for those; `moved` says the item went to `bin` because it was
+        // elsewhere. A duplicate is the same file on disk (also through a symlink, a hard link or
+        // another spelling of the path) imported the same way: a still and the image sequence it
+        // starts are two items. See docs/project-files.md, "Importing a file twice".
         cmd!("file.import", "Import…", ["File"], Some("Cmd+I"), r#"{"paths":[str],"bin":binId?,"imageSequence":bool?}"#, always, |s, p| {
             let bin = u64_p(p, "bin").map(filmcraft_project::BinId);
             let paths: Vec<String> = match p.get("paths").and_then(Value::as_array) {
@@ -822,50 +912,85 @@ fn build() -> Vec<CommandSpec> {
             // Settings ▸ Media ▸ Import image sequences on, a single numbered still is detected.
             let as_sequence = p.get("imageSequence").and_then(Value::as_bool).unwrap_or(false);
             let detect = !as_sequence && s.prefs.media.import_image_sequences && paths.len() == 1;
-            for path in paths {
-                if as_sequence || (detect && detect_image_sequence(s, &path)) {
-                    match import_image_sequence(s, &path, bin) {
-                        Ok((id, frames, missing)) => {
-                            ids.push(id.0);
-                            image_sequences.push(json!({"item": id.0, "frames": frames, "missing": missing}));
+            // A file the project already has is not imported again (#356): what each path would
+            // add, and the project's files that could be the same, looked up once.
+            let mut sizes = std::collections::HashSet::new();
+            let paths: Vec<(String, bool, Option<ImportKey>)> = paths
+                .into_iter()
+                .map(|path| {
+                    let sequence = as_sequence || (detect && detect_image_sequence(s, &path));
+                    let key = ImportKey::of(&*s.services, &path, sequence).map(|(key, size)| {
+                        sizes.insert(size);
+                        key
+                    });
+                    (path, sequence, key)
+                })
+                .collect();
+            let mut imported = imported_files(s, &sizes);
+            let mut duplicates = Vec::new();
+            for (path, sequence, key) in paths {
+                if let Some(item) = key.as_ref().and_then(|k| imported.get(k)).copied() {
+                    // asked into a bin it is not in: it moves there (one item, where it was asked for)
+                    let mut moved = false;
+                    if let Some(b) = bin.filter(|b| s.project.root.find_bin(*b).is_some() && s.project.root.parent_of(item) != Some(*b)) {
+                        match s.edit("Move to Bin", |pr, _| pr.move_to_bin(&[item], Some(b)).ok_or_else(|| bad("file.import", "no such bin"))) {
+                            Ok(n) => moved = n > 0,
+                            Err(e) => errors.push(format!("{path}: {e}")),
                         }
-                        Err(e) => errors.push(format!("{path}: {e}")),
                     }
+                    duplicates.push(json!({"path": path, "item": item.0, "moved": moved}));
                     continue;
                 }
-                // Media files through the host's reader (no whole-file read) when it has one.
-                let streamed = filmcraft_media::is_importable(std::path::Path::new(&path)) && s.services.reader(&path).is_some();
-                let read = if streamed { Ok(Vec::new()) } else { s.services.read_file(&path) };
-                match read {
-                    Ok(_) if streamed => match import_streamed(s, &path, bin) {
-                        Ok(id) => ids.push(id.0),
-                        Err(e) => errors.push(format!("{path}: {e}")),
-                    },
-                    Ok(b) => {
-                        if let Some(fmt) = crate::captions::detect(&path, &b) {
-                            match crate::captions::import(s, &path, &b, fmt, None) {
-                                Ok(r) => reports.push(r),
-                                Err(e) => errors.push(format!("{path}: {e}")),
-                            }
-                        } else if let Some(fmt) = crate::interchange::detect(&path, &b) {
-                            match crate::interchange::import(s, &path, &b, fmt) {
-                                Ok(r) => {
-                                    sequences.extend(r["sequences"].as_array().cloned().unwrap_or_default());
-                                    reports.push(r);
-                                }
-                                Err(e) => errors.push(format!("{path}: {e}")),
-                            }
-                        } else {
-                            match import_bytes(s, &path, b.into(), bin) {
-                                Ok(id) => ids.push(id.0),
-                                Err(e) => errors.push(format!("{path}: {e}")),
-                            }
+                let added = if sequence {
+                    match import_image_sequence(s, &path, bin) {
+                        Ok((id, frames, missing)) => {
+                            image_sequences.push(json!({"item": id.0, "frames": frames, "missing": missing}));
+                            Some(id)
+                        }
+                        Err(e) => {
+                            errors.push(format!("{path}: {e}"));
+                            None
                         }
                     }
-                    Err(e) => errors.push(format!("{path}: {e}")),
+                } else {
+                    // Media files through the host's reader (no whole-file read) when it has one.
+                    let streamed = filmcraft_media::is_importable(std::path::Path::new(&path)) && s.services.reader(&path).is_some();
+                    let read = if streamed { Ok(Vec::new()) } else { s.services.read_file(&path) };
+                    let media = match read {
+                        Ok(_) if streamed => import_streamed(s, &path, bin).map(Some),
+                        Ok(b) => {
+                            if let Some(fmt) = crate::captions::detect(&path, &b) {
+                                crate::captions::import(s, &path, &b, fmt, None).map(|r| {
+                                    reports.push(r);
+                                    None
+                                })
+                            } else if let Some(fmt) = crate::interchange::detect(&path, &b) {
+                                crate::interchange::import(s, &path, &b, fmt).map(|r| {
+                                    sequences.extend(r["sequences"].as_array().cloned().unwrap_or_default());
+                                    reports.push(r);
+                                    None
+                                })
+                            } else {
+                                import_bytes(s, &path, b.into(), bin).map(Some)
+                            }
+                        }
+                        Err(e) => Err(EngineError::Other(e.to_string())),
+                    };
+                    media.unwrap_or_else(|e| {
+                        errors.push(format!("{path}: {e}"));
+                        None
+                    })
+                };
+                if let Some(id) = added {
+                    ids.push(id.0);
+                    // the same file again later in `paths` (or through a link) is a duplicate too
+                    if let Some(key) = key {
+                        imported.insert(key, id);
+                    }
                 }
             }
-            if ids.is_empty() && sequences.is_empty() && reports.is_empty() && !errors.is_empty() {
+            // every path failed: an error. A file that was already there is a result, not a failure.
+            if ids.is_empty() && sequences.is_empty() && reports.is_empty() && duplicates.is_empty() && !errors.is_empty() {
                 return Err(EngineError::Other(errors.join("; ")));
             }
             // Project Settings ▸ Ingest: copy / transcode / create proxies
@@ -903,6 +1028,14 @@ fn build() -> Vec<CommandSpec> {
             if !image_sequences.is_empty() {
                 out["imageSequences"] = json!(image_sequences);
             }
+            if !duplicates.is_empty() {
+                let names: Vec<&str> =
+                    duplicates.iter().take(3).filter_map(|d| d["path"].as_str()).map(|p| p.rsplit(['/', '\\']).next().unwrap_or(p)).collect();
+                let more = duplicates.len().saturating_sub(names.len());
+                let more = if more > 0 { format!(" and {more} more") } else { String::new() };
+                s.toast(format!("Already in the project: {}{more}", names.join(", ")));
+            }
+            out["duplicates"] = json!(duplicates);
             // Newly imported files may resolve paths the project already listed as offline
             // (issue #110): rebuild s.offline.missing so the "Media missing" badge clears, and drop
             // the cached slate of every item that came back so the monitors show the file again.
