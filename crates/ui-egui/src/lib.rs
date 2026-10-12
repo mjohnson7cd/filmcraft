@@ -1403,8 +1403,7 @@ impl FilmcraftApp {
                 && let Some(pos) = pointer
                 && self.session.prefs.timeline.drop_import_to_timeline
             {
-                let items: Vec<filmcraft_engine::project::ItemId> =
-                    v["items"].as_array().map(|a| a.iter().filter_map(|i| i.as_u64()).map(filmcraft_engine::project::ItemId).collect()).unwrap_or_default();
+                let items = filmcraft_engine::paste_media::imported_items(&v);
                 if !items.is_empty() {
                     self.pending_timeline_drop = Some((items, pos));
                 }

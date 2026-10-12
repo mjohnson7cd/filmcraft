@@ -1133,6 +1133,20 @@ fn marker_list_mut(s: &mut Session) -> Result<(ItemId, Tick)> {
     Ok((seq, s.playhead()))
 }
 
+/// The project item already importing `path`, compared by canonical path so `dir/./a.mov`,
+/// `dir/sub/../a.mov` and a symlinked folder all match. Only items with the same file name are
+/// canonicalized, so big projects don't stat every file.
+fn find_duplicate_item(s: &Session, path: &str) -> Option<ItemId> {
+    let canonical = std::fs::canonicalize(path).ok()?;
+    let name = std::path::Path::new(path).file_name()?;
+    s.project.items.values().find_map(|item| match &item.as_media()?.media {
+        MediaRef::File { path: existing } if std::path::Path::new(existing).file_name() == Some(name) && std::fs::canonicalize(existing).ok()? == canonical => {
+            Some(item.id)
+        }
+        _ => None,
+    })
+}
+
 fn build() -> Vec<CommandSpec> {
     let mut v = vec![
         // ================= File =================
@@ -1346,12 +1360,19 @@ fn build() -> Vec<CommandSpec> {
             let mut sequences = Vec::new();
             let mut reports = Vec::new();
             let mut image_sequences = Vec::new();
+            let mut duplicates = Vec::new();
             // Image Sequence: each path is the first frame of a numbered still sequence. With
             // Settings ▸ Media ▸ Import image sequences on, a single numbered still is detected.
             let as_sequence = p.get("imageSequence").and_then(Value::as_bool).unwrap_or(false);
             let detect = !as_sequence && s.prefs.media.import_image_sequences && paths.len() == 1;
             for path in paths {
-                if as_sequence || (detect && detect_image_sequence(s, &path)) {
+                let sequence = as_sequence || (detect && detect_image_sequence(s, &path));
+                // A sequence is a different item from its first frame imported as a still.
+                if !sequence && let Some(dup) = find_duplicate_item(s, &path) {
+                    duplicates.push(json!({"path": path, "item": dup.0}));
+                    continue;
+                }
+                if sequence {
                     match import_image_sequence(s, &path, bin) {
                         Ok((id, frames, missing)) => {
                             ids.push(id.0);
@@ -1430,6 +1451,12 @@ fn build() -> Vec<CommandSpec> {
             };
             if !image_sequences.is_empty() {
                 out["imageSequences"] = json!(image_sequences);
+            }
+            if !duplicates.is_empty() {
+                out["duplicates"] = json!(duplicates);
+                let count = duplicates.len();
+                let noun = if count == 1 { "file" } else { "files" };
+                s.toast(format!("{count} {noun} already in the project"));
             }
             // Newly imported files may resolve paths the project already listed as offline
             // (issue #110): rebuild s.offline.missing so the "Media missing" badge clears, and drop

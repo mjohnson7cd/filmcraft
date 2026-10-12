@@ -51,13 +51,23 @@ fn paste_media(s: &mut Session, p: &Value) -> Result<Value> {
     r
 }
 
+/// Extract all item IDs from a file.import result, including both newly imported items and duplicates.
+/// Files already in the project appear in the `duplicates` array with their existing item ID.
+pub(crate) fn imported_items(result: &Value) -> Vec<ItemId> {
+    let mut items: Vec<ItemId> = result["items"].as_array().map(|a| a.iter().filter_map(Value::as_u64).map(ItemId).collect()).unwrap_or_default();
+    // Files already in the project are in duplicates; append their existing item IDs.
+    // shortcut: they go after the new ones, not in original `paths` order; fine unless mixed pastes need exact order.
+    items.extend(result["duplicates"].as_array().into_iter().flatten().filter_map(|d| d["item"].as_u64()).map(ItemId));
+    items
+}
+
 fn import_and_place(s: &mut Session, paths: &[String], bin: Option<BinId>, place: bool, insert: bool) -> Result<Value> {
     let mut import = json!({"paths": paths});
     if let Some(b) = bin {
         import["bin"] = json!(b.0);
     }
     let imported = s.execute("file.import", import)?;
-    let items: Vec<ItemId> = imported["items"].as_array().map(|a| a.iter().filter_map(Value::as_u64).map(ItemId).collect()).unwrap_or_default();
+    let items = imported_items(&imported);
     if !place {
         return Ok(json!({"items": items.iter().map(|i| i.0).collect::<Vec<_>>(), "clips": []}));
     }

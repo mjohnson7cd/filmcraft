@@ -1161,3 +1161,49 @@ fn negative_place_and_marker_times_are_refused() {
     s.execute("markers.add", json!({"frame": 0, "name": "start"})).unwrap();
     assert!(s.active_sequence().unwrap().markers.iter().any(|m| m.start == Tick::ZERO && m.name == "start"));
 }
+
+#[test]
+fn duplicate_file_import_detection() {
+    let mut s = Session::default();
+    s.execute("file.newProject", json!({"name": "test"})).unwrap();
+
+    // Create a tiny valid PNG file (1x1 transparent pixel)
+    let dir = std::env::temp_dir().join(format!("fc-dup-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file_path = dir.join("test.png");
+    // Minimal valid PNG: 1x1 transparent pixel
+    let png_data: &[u8] = &[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG signature
+        0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, // IHDR chunk
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, // 1x1
+        0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, // 8-bit RGBA
+        0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, // IDAT chunk
+        0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, // compressed data
+        0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, // CRC
+        0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, // IEND chunk
+        0x42, 0x60, 0x82,
+    ];
+    std::fs::write(&file_path, png_data).unwrap();
+
+    // Import once - should succeed
+    let r1 = s.execute("file.import", json!({"paths": [file_path.to_str()]})).unwrap();
+    assert_eq!(r1["items"].as_array().unwrap().len(), 1, "first import adds item");
+    assert!(r1.get("duplicates").is_none(), "no duplicates on first import");
+
+    // Import again with absolute path - should be duplicate
+    let r2 = s.execute("file.import", json!({"paths": [file_path.to_str()]})).unwrap();
+    assert_eq!(r2["items"].as_array().unwrap().len(), 0, "second import adds nothing");
+    assert_eq!(r2["duplicates"].as_array().unwrap().len(), 1, "reports duplicate");
+    assert_eq!(r2["duplicates"][0]["item"], r1["items"][0], "duplicate points to original item");
+
+    // A different spelling of the same absolute path (dir/./test.png) is a duplicate too;
+    // absolute paths only, so no set_current_dir racing other tests.
+    let reconstructed = dir.join(".").join("test.png");
+    assert_ne!(reconstructed.as_os_str(), file_path.as_os_str());
+    let r3 = s.execute("file.import", json!({"paths": [reconstructed.to_str()]})).unwrap();
+    assert_eq!(r3["items"].as_array().unwrap().len(), 0, "reconstructed path adds nothing");
+    assert_eq!(r3["duplicates"].as_array().unwrap().len(), 1, "reports duplicate");
+
+    // Clean up
+    std::fs::remove_dir_all(&dir).ok();
+}

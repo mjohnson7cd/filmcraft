@@ -495,6 +495,9 @@ fn new_layer_from_file_places_the_image_above() {
     assert_eq!((anchor.x, anchor.y), (w as f64 / 2.0, h as f64 / 2.0));
     assert_eq!(s.state.selection, vec![clip]);
     assert!(s.execute("graphics.newFromFile", json!({})).is_err());
+    // Re-importing the same file works and returns the same item (duplicate detection)
+    let r2 = s.execute("graphics.newFromFile", json!({"path": path.to_string_lossy()})).unwrap();
+    assert_eq!(r2["item"], r["item"], "re-importing returns existing item");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
