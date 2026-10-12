@@ -323,6 +323,23 @@ fn scene_edit_detection_from_the_clip_menu_opens_the_dialog() {
     assert!(!d.has("sceneDetect.ok"));
 }
 
+/// #1184: the clip's right-click menu offers Add Marker, adding a marker at the playhead like M.
+#[test]
+fn add_marker_from_the_clip_menu_marks_the_playhead() {
+    let mut d = Driver::new();
+    let c = d.v1(0);
+    let at = c.start + filmcraft_time::FrameRate::FPS_23_976.tick_of(5);
+    d.exec("playhead.set", json!({"time": at.0}));
+    d.exec("timeline.select", json!({"clips": [c.id.0]}));
+    let before = d.app().session.active_sequence().unwrap().markers.len();
+    d.ok("ui.click", json!({"id": format!("timeline.clip.{}", c.id.0), "button": "right"}));
+    d.frames(3);
+    d.click("timeline.clipMenu.markers.add");
+    let markers = &d.app().session.active_sequence().unwrap().markers;
+    assert_eq!(markers.len(), before + 1);
+    assert!(markers.iter().any(|m| m.start == at), "a marker at the playhead");
+}
+
 #[test]
 fn quitting_with_unsaved_changes_asks_to_save() {
     let mut d = Driver::new();

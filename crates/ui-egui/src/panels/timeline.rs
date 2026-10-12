@@ -1872,7 +1872,7 @@ pub(crate) const CLIP_MENU: &[&[(&str, &str)]] = &[
         ("Reveal Nested Sequence", "sequence.revealNested"),
         ("Multi-Camera", "clip.multicam"),
     ],
-    &[("Label", "edit.label")],
+    &[("Label", "edit.label"), ("Add Marker", "markers.add")],
     &[("Speed/Duration…", "clip.speedDuration"), ("Scene Edit Detection…", "clip.sceneEditDetection")],
     &[
         ("Frame Hold Options…", "clip.frameHoldOptions"),
