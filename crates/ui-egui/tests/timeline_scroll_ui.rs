@@ -210,6 +210,22 @@ fn the_view_stops_ten_minutes_past_the_end_of_the_sequence() {
     assert_eq!(d.view().0, 0.0);
 }
 
+/// The tracks' vertical bars are as thick as the zoom bar and drag the tracks (#1189).
+#[test]
+fn the_vertical_scroll_bars_are_as_thick_as_the_zoom_bar_and_drag_the_tracks() {
+    let mut d = Driver::tall();
+    let tracks = d.rect("timeline.tracks");
+    let zoom = d.rect("timeline.zoomBar.track");
+    // the zoom bar sits 2 points below the tracks, the vertical bars 2 points right of them: a
+    // press near the far edge of a bar as thick as the zoom bar (once it was 7 points)
+    let x = tracks[0] + tracks[2] + 2.0 + zoom[3] - 1.5;
+    // dragging the video bar up brings the higher tracks in (Video 1 is at the bottom)
+    let (from, to) = (tracks[1] + tracks[3] * 0.3, tracks[1] + tracks[3] * 0.1);
+    d.ok("ui.drag", json!({"from": {"x": x, "y": from}, "to": {"x": x, "y": to}, "steps": 10}));
+    let (_, _, v, a) = d.view();
+    assert!(v > 0.0 && a == 0.0, "the bar right of the tracks scrolled the video tracks: {v} {a}");
+}
+
 #[test]
 fn the_scroll_bar_thumb_follows_the_pointer_and_reaches_both_ends() {
     let mut d = Driver::tall();
